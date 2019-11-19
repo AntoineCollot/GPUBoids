@@ -1,0 +1,96 @@
+﻿// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel CSMain
+//Must include this for buffer to work
+#include "UnityCG.cginc"
+
+struct Boid
+{
+	float3 position;
+	float3 direction;
+};
+
+float Inv(float x, float s)
+{
+        //Avoid dividing by zero using espilon
+        float value = x / s + 0.00001f;
+
+        return 1 / (value * value);
+}
+
+//Output
+RWStructuredBuffer<Boid> boidsBuffer;
+
+///Variables
+float3 _Target;
+float _DeltaTime;
+
+//Constants
+CBUFFER_START(Params)
+	uniform float _RotationSpeed;
+	uniform float _MoveSpeed;
+	uniform float _NeighbourDistance;
+	uniform float _SeparationDistance;
+	uniform float _WeightTarget;
+	uniform float _WeightCohesion;
+	uniform float _WeightAlignement;
+	uniform float _WeightSeparation;
+	uniform int _BoidsCount;
+	CBUFFER_END
+
+[numthreads(256,1,1)]
+void CSMain (uint3 id : SV_DispatchThreadID)
+{
+	Boid boid = boidsBuffer[id.x];
+	
+ 	//Average position
+	float3 rule_cohesion = boid.position;
+	//Average forward
+	float3 rule_alignement = float3(0,0,0);
+	float3 rule_separation = float3(0,0,0);
+	
+	//Normalize fucks up if try to normalize (0,0,0)
+	float3 rule_target = normalize(_Target - boid.position);
+	int neighboursCount = 1;
+	
+	for(int i=0;i<_BoidsCount;i++)
+	{
+		if (i != (int)id.x)
+        {
+			 Boid otherBoid = boidsBuffer[i.x];
+			
+			//Distance
+			float3 diff = boid.position - otherBoid.position;
+			float diffLength = length(diff);
+			int isNeighbour = step(diffLength,_NeighbourDistance);
+             neighboursCount += isNeighbour;
+			
+			//Separation
+			rule_separation += diff/diffLength * Inv(diffLength,_SeparationDistance) * isNeighbour;
+			
+			//Cohesion
+			rule_cohesion += otherBoid.position * isNeighbour;
+			
+			//Alignement
+			rule_alignement += otherBoid.direction *isNeighbour;
+		}
+	}
+	
+	rule_cohesion = normalize(rule_cohesion/neighboursCount - boid.position * 0.99)* step(2,neighboursCount);
+	rule_alignement =  rule_alignement/neighboursCount;
+	
+	float3 movement = rule_target * _WeightTarget + rule_cohesion * _WeightCohesion + rule_alignement * _WeightAlignement + rule_separation * _WeightSeparation;
+	
+	//Direction
+    //Separate the axis and give a little boost in x to avoid all parameters going the same speed
+    //thus keeping the vector pretty mush the same after normalization
+    float tx = exp(-_RotationSpeed* 1.1 * _DeltaTime);
+    float tyz = exp(-_RotationSpeed * _DeltaTime);
+    boid.direction.x = lerp(movement.x,boid.direction.x,tx);
+    boid.direction.y = lerp(movement.y,boid.direction.y,tyz);
+    boid.direction.z = lerp(movement.z,boid.direction.z,tyz);
+    boid.direction = normalize(boid.direction);
+	
+	boid.position += boid.direction * _MoveSpeed * _DeltaTime;
+	
+	boidsBuffer[id.x] = boid;
+}
